@@ -3,7 +3,8 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
   <title>full‑screen color + popup</title>
   <style>
     * {
@@ -17,13 +18,19 @@
       height: 100%;
       width: 100%;
       overflow: hidden;
+      overscroll-behavior: none;          /* no pull-to-refresh / rubber-band */
+      touch-action: none;                 /* we handle all gestures ourselves  */
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
 
     #screen {
-      height: 100vh;
-      width: 100vw;
+      position: fixed;
+      inset: 0;
       background-color: rgb(0, 0, 0);
       transition: background-color 0.05s linear;
+      touch-action: none;
     }
 
     /* popup — transient, auto‑hides */
@@ -33,6 +40,7 @@
       right: 30px;
       background: rgba(20, 20, 30, 0.85);
       backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
       color: white;
       font-family: 'Segoe UI', Roboto, 'Fira Code', monospace;
       font-size: 1.5rem;
@@ -42,10 +50,11 @@
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
       letter-spacing: 0.5px;
       pointer-events: none;
-      /* allow clicks to pass through */
+      /* allow clicks/touches to pass through */
       opacity: 0;
       transition: opacity 0.2s ease-in-out;
       z-index: 1000;
+      white-space: nowrap;
     }
 
     #popup.show {
@@ -65,11 +74,70 @@
       margin-left: 0.75rem;
       border: 1px solid #777792;
     }
+
+    /* ---------- gesture hint (touch devices only) ---------- */
+    #hint {
+      position: fixed;
+      top: max(18px, env(safe-area-inset-top));
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 0.6rem 1.2rem;
+      border-radius: 2rem;
+      background: rgba(20, 20, 30, 0.75);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid rgba(255, 255, 240, 0.2);
+      color: #fff;
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      font-size: 0.95rem;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 1000;
+      opacity: 0;
+      display: none;
+      transition: opacity 0.6s ease;
+    }
+
+    @media (pointer: coarse) {
+      #hint {
+        display: block;
+        opacity: 1;
+      }
+    }
+
+    #hint.hide {
+      opacity: 0;
+    }
+
+    /* ---------- mobile layout ---------- */
+    @media (max-width: 600px) {
+      #popup {
+        right: 50%;
+        bottom: max(26px, env(safe-area-inset-bottom));
+        transform: translateX(50%);
+        font-size: 1.15rem;
+        padding: 0.75rem 1.4rem;
+      }
+
+      #popup .mode-badge {
+        font-size: 0.85rem;
+      }
+
+      #hint {
+        font-size: 0.82rem;
+        padding: 0.5rem 1rem;
+      }
+    }
   </style>
 </head>
 
 <body>
   <div id="screen"></div>
+
+  <div id="hint">Swipe ← → intensity · Swipe ↑ ↓ mode · Tap to peek</div>
+
   <div id="popup">
     <span id="popup-color">rgb(0, 0, 0)</span>
     <span class="mode-badge" id="popup-mode">RED x=0</span>
@@ -77,24 +145,31 @@
 
   <script>
     (function () {
-      // ----- state -----
-      let x = 0;               // 0 .. 255
+      'use strict';
+
+      /* ------------------------------------------------------------------ */
+      /*  state                                                             */
+      /* ------------------------------------------------------------------ */
+      let x = 0;                     // 0 .. 255
       const MIN_X = 0;
       const MAX_X = 255;
 
-      // mode: 0 = RED   (x,0,0)
-      //       1 = GREEN (0,x,0)
-      //       2 = BLUE  (0,0,x)
+      // 0 = RED   (x,0,0)
+      // 1 = GREEN (0,x,0)
+      // 2 = BLUE  (0,0,x)
       let mode = 0;
 
-      const screenEl = document.getElementById('screen');
-      const popupEl = document.getElementById('popup');
-      const popupColorSpan = document.getElementById('popup-color');
-      const popupModeSpan = document.getElementById('popup-mode');
+      const screenEl     = document.getElementById('screen');
+      const popupEl      = document.getElementById('popup');
+      const popupColorEl = document.getElementById('popup-color');
+      const popupModeEl  = document.getElementById('popup-mode');
+      const hintEl       = document.getElementById('hint');
 
       let hideTimeout = null;
 
-      // --- helper: format current color as RGB tuple + mode label ---
+      /* ------------------------------------------------------------------ */
+      /*  helpers                                                           */
+      /* ------------------------------------------------------------------ */
       function getRgbTuple() {
         switch (mode) {
           case 0: return [x, 0, 0];
@@ -108,52 +183,45 @@
         return ['RED', 'GREEN', 'BLUE'][mode];
       }
 
-      // --- show transient popup with current color info ---
       function showPopup() {
         const [r, g, b] = getRgbTuple();
-        const rgbStr = `rgb(${r}, ${g}, ${b})`;
-        const modeStr = `${getModeLabel()} x=${x}`;
+        popupColorEl.textContent = `rgb(${r}, ${g}, ${b})`;
+        popupModeEl.textContent  = `${getModeLabel()} x=${x}`;
 
-        popupColorSpan.textContent = rgbStr;
-        popupModeSpan.textContent = modeStr;
-
-        // make popup visible
         popupEl.classList.add('show');
 
-        // clear previous timeout to avoid premature hiding
-        if (hideTimeout) {
-          clearTimeout(hideTimeout);
-        }
-
-        // set new timeout to hide after 1 second
+        clearTimeout(hideTimeout);
         hideTimeout = setTimeout(() => {
           popupEl.classList.remove('show');
           hideTimeout = null;
         }, 1000);
       }
 
-      // --- update background and show popup ---
       function updateDisplay() {
         const [r, g, b] = getRgbTuple();
         screenEl.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
-        showPopup();   // popup will reflect current state
+        showPopup();
       }
 
-      // --- intensity setters ---
-      function setX(newX) {
-        x = Math.min(MAX_X, Math.max(MIN_X, newX));
+      function setX(next) {
+        const clamped = Math.min(MAX_X, Math.max(MIN_X, next));
+        if (clamped === x) return;          // nothing changed (e.g. at a bound)
+        x = clamped;
         updateDisplay();
       }
 
-      function setMode(newMode) {
-        mode = (newMode + 3) % 3;
+      function setMode(next) {
+        mode = ((next % 3) + 3) % 3;        // safe wrap for any integer
         updateDisplay();
       }
 
-      // --- keyboard handling (same as before) ---
+      /* ------------------------------------------------------------------ */
+      /*  keyboard                                                          */
+      /* ------------------------------------------------------------------ */
       function handleKeyDown(e) {
         const key = e.key;
-        if (key.startsWith('Arrow') || key === 'PageUp' || key === 'PageDown' || key === 'Home' || key === 'End') {
+        if (key.startsWith('Arrow') || key === 'PageUp' || key === 'PageDown' ||
+            key === 'Home' || key === 'End') {
           e.preventDefault();
         }
 
@@ -171,7 +239,113 @@
       }
 
       window.addEventListener('keydown', handleKeyDown);
-      updateDisplay();   // initial black + popup
+
+      /* ------------------------------------------------------------------ */
+      /*  touch / swipe gestures                                            */
+      /* ------------------------------------------------------------------ */
+      const AXIS_LOCK_PX  = 8;    // travel before a gesture locks to one axis
+      const MODE_SWIPE_PX = 40;   // vertical travel needed for a mode change
+      const TAP_MAX_MS    = 300;  // tap = short + no axis lock
+
+      let gesture = null;
+
+      // Horizontal sensitivity: roughly half a screen-width per 0-255 range,
+      // clamped so it feels right on both small phones and tablets.
+      function pxPerUnit() {
+        return Math.min(6, Math.max(2, window.innerWidth / 128));
+      }
+
+      function buzz() {
+        if (navigator.vibrate) navigator.vibrate(8);   // subtle haptic feedback
+      }
+
+      function onTouchStart(e) {
+        if (e.touches.length !== 1) {   // multi-touch (pinch) -> ignore
+          gesture = null;
+          return;
+        }
+        const t = e.touches[0];
+        gesture = {
+          startX: t.clientX,
+          startY: t.clientY,
+          lastX:  t.clientX,
+          lastY:  t.clientY,
+          startTime: performance.now(),
+          axis: null,          // null | 'x' | 'y'
+          accX: 0,
+          step: pxPerUnit(),
+          modeChanged: false
+        };
+      }
+
+      function onTouchMove(e) {
+        if (!gesture || e.touches.length !== 1) return;
+        e.preventDefault();                       // no scroll / pull-to-refresh
+
+        const t = e.touches[0];
+        const totalDx = t.clientX - gesture.startX;
+        const totalDy = t.clientY - gesture.startY;
+
+        // --- lock to the dominant axis once the finger has moved enough ---
+        if (!gesture.axis &&
+            (Math.abs(totalDx) > AXIS_LOCK_PX || Math.abs(totalDy) > AXIS_LOCK_PX)) {
+          gesture.axis = Math.abs(totalDx) >= Math.abs(totalDy) ? 'x' : 'y';
+        }
+
+        const dx = t.clientX - gesture.lastX;
+        const dy = t.clientY - gesture.lastY;
+        gesture.lastX = t.clientX;
+        gesture.lastY = t.clientY;
+
+        if (gesture.axis === 'x') {
+          /* horizontal drag -> continuous intensity change */
+          gesture.accX += dx;
+          while (gesture.accX >=  gesture.step) { gesture.accX -= gesture.step; setX(x + 1); }
+          while (gesture.accX <= -gesture.step) { gesture.accX += gesture.step; setX(x - 1); }
+
+        } else if (gesture.axis === 'y') {
+          /* vertical swipe -> one mode change per gesture (immediate feedback) */
+          if (!gesture.modeChanged && Math.abs(totalDy) >= MODE_SWIPE_PX) {
+            gesture.modeChanged = true;
+            setMode(totalDy < 0 ? mode + 1 : mode - 1);   // up = next, down = previous
+            buzz();
+          }
+        }
+      }
+
+      function onTouchEnd() {
+        if (!gesture) return;
+
+        const wasTap = !gesture.axis &&
+                       (performance.now() - gesture.startTime) < TAP_MAX_MS;
+        gesture = null;
+
+        if (wasTap) showPopup();    // tap anywhere to peek at the current value
+      }
+
+      function onTouchCancel() {
+        gesture = null;
+      }
+
+      // Attach to `document` so the gesture works no matter what is on top.
+      document.addEventListener('touchstart',  onTouchStart,  { passive: true });
+      document.addEventListener('touchmove',   onTouchMove,   { passive: false });
+      document.addEventListener('touchend',    onTouchEnd,    { passive: true });
+      document.addEventListener('touchcancel', onTouchCancel, { passive: true });
+
+      // Extra safety on iOS: block pinch-zoom gestures.
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (evt) {
+        document.addEventListener(evt, function (e) { e.preventDefault(); }, { passive: false });
+      });
+
+      /* ------------------------------------------------------------------ */
+      /*  boot                                                              */
+      /* ------------------------------------------------------------------ */
+      updateDisplay();                                      // initial black + popup
+
+      if (hintEl) {
+        setTimeout(() => hintEl.classList.add('hide'), 5000);   // fade the hint
+      }
     })();
   </script>
 </body>
